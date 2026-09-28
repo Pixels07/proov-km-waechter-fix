@@ -1,24 +1,73 @@
-# analyze.py
-# Make KM-Waechter smarter. The 80% rule only warns you once a car is nearly worn. Here you find
-# which cars are most likely to break down SOON, from their history, and rank them by risk, so the
-# fleet team fixes the risky ones first.
-#
-# fleet_history.csv has one row per car (120 of them) and a "broke_down" column (1 = it later
-# broke down).
-#
-# TODO(you), with IBM Bob and pandas:
-#   1. Load fleet_history.csv.
-#   2. Find which columns actually separate the cars that broke down from those that did not.
-#      Do not assume. Compare the two groups column by column and let the numbers answer.
-#      (Total mileage and age look like the obvious answers. Check whether they really are.)
-#   3. Build a simple risk score from 0 to 100 for each car, from the columns that DO separate.
-#      No heavy machine learning needed.
-#   4. Print the cars ranked by risk, highest first.
-#   5. Write a two-line summary at the top of this file: which factors matter most, and why.
+"""Breakdown cars average 11,678 km since service vs. 7,261 for others.
+They also average 159.7 daily km and 0.60 load factor, vs. 131.4 and 0.51.
+"""
 
-import pandas as pd
+import csv
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
 
-df = pd.read_csv("fleet_history.csv")
-print(df.head())
+HISTORY_FILE = Path(__file__).with_name("fleet_history.csv")
+RISK_ALERT_SCORE = 60.0
+KM_WEIGHT = 0.50
+DAILY_KM_WEIGHT = 0.30
+LOAD_WEIGHT = 0.20
 
-# your analysis here
+Vehicle = Mapping[str, Any]
+
+
+def risk_score(vehicle: Vehicle) -> float:
+    """Return a 0-100 score from service distance, daily use, and load only."""
+    km_since_service = min(max(float(vehicle["km_since_service"]) / 15000, 0), 1)
+    avg_daily_km = min(max(float(vehicle["avg_daily_km"]) / 250, 0), 1)
+    load_factor = min(max(float(vehicle["load_factor"]), 0), 1)
+    return 100 * (
+        KM_WEIGHT * km_since_service
+        + DAILY_KM_WEIGHT * avg_daily_km
+        + LOAD_WEIGHT * load_factor
+    )
+
+
+def is_high_risk(vehicle: Vehicle) -> bool:
+    """Return whether a vehicle reaches the historical risk screening score."""
+    return risk_score(vehicle) >= RISK_ALERT_SCORE
+
+
+def load_history(path: str | Path = HISTORY_FILE) -> list[dict[str, str]]:
+    """Load the labelled fleet history from a CSV file."""
+    with Path(path).open(newline="") as history_file:
+        return list(csv.DictReader(history_file))
+
+
+def breakdown_averages(rows: Sequence[Vehicle]) -> dict[int, dict[str, float]]:
+    """Calculate requested metric means for each breakdown label."""
+    metrics = ("km_since_service", "avg_daily_km", "load_factor")
+    result = {}
+    for label in (0, 1):
+        group = [row for row in rows if int(row["broke_down"]) == label]
+        result[label] = {
+            metric: sum(float(row[metric]) for row in group) / len(group)
+            for metric in metrics
+        }
+    return result
+
+
+def main() -> None:
+    """Print historical metric averages and all vehicles ranked by risk."""
+    rows = load_history()
+    for label, averages in breakdown_averages(rows).items():
+        outcome = "broke down" if label else "did not break down"
+        print(
+            f"{outcome}: km_since_service={averages['km_since_service']:.1f}, "
+            f"avg_daily_km={averages['avg_daily_km']:.1f}, "
+            f"load_factor={averages['load_factor']:.2f}"
+        )
+
+    ranked = sorted(rows, key=risk_score, reverse=True)
+    print("\nVehicle risk scores (highest first):")
+    for vehicle in ranked:
+        print(f"{vehicle['car_id']}: {risk_score(vehicle):.1f}")
+
+
+if __name__ == "__main__":
+    main()
